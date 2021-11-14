@@ -16,7 +16,7 @@ parser = argparse.ArgumentParser(description='FaceBoxes')
 
 parser.add_argument('-m', '--trained_model', default='weights/Final_HandBoxes.pth',
                     type=str, help='Trained state_dict file path to open')
-parser.add_argument('--cpu', action="store_true", default=False, help='Use cpu inference')
+parser.add_argument('--cpu', action="store_true", default=True, help='Use cpu inference')
 parser.add_argument('--video', default='data/video/hand.avi', type=str, help='dataset')
 parser.add_argument('--image', default=None, type=str, help='dataset')
 parser.add_argument('--confidence_threshold', default=0.2, type=float, help='confidence_threshold')
@@ -61,6 +61,68 @@ def load_model(model, pretrained_path, load_to_cpu):
     model.load_state_dict(pretrained_dict, strict=False)
     return model
 
+def detect_from_image(image_path):
+
+    to_show = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img = np.float32(to_show)
+
+    if resize != 1:
+        img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
+    im_height, im_width, _ = img.shape
+    scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
+    img -= (104, 117, 123)
+    img = img.transpose(2, 0, 1)
+    img = torch.from_numpy(img).unsqueeze(0)
+    img = img.to(device)
+    scale = scale.to(device)
+
+    _t['forward_pass'].tic()
+    out = net(img)  # forward pass
+    _t['forward_pass'].toc()
+    _t['misc'].tic()
+    priorbox = PriorBox(cfg, out[2], (im_height, im_width), phase='test')
+    priors = priorbox.forward()
+    priors = priors.to(device)
+    loc, conf, _ = out
+    prior_data = priors.data
+    boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
+    boxes = boxes * scale / resize
+    boxes = boxes.cpu().numpy()
+    scores = conf.data.cpu().numpy()[:, 1]
+
+    # ignore low scores
+    inds = np.where(scores > args.confidence_threshold)[0]
+    boxes = boxes[inds]
+    scores = scores[inds]
+
+    # keep top-K before NMS
+    order = scores.argsort()[::-1][:args.top_k]
+    boxes = boxes[order]
+    scores = scores[order]
+
+    # do NMS
+    dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+    # keep = py_cpu_nms(dets, args.nms_threshold)
+    keep = nms(dets, args.nms_threshold, force_cpu=args.cpu)
+    dets = dets[keep, :]
+
+    # keep top-K faster NMS
+    dets = dets[:args.keep_top_k, :]
+    _t['misc'].toc()
+    # cv2.destroyAllWindows()
+    # print(dets[0][2])
+    for i in range(dets.shape[0]):
+        cv2.rectangle(to_show, (int(dets[i][0]), int(dets[i][1])), (int(dets[i][2]), int(dets[i][3])), (0, 0, 255), 3)
+
+    # print(dets.shape[0])
+
+    # for i in range(dets.shape[0]):
+    # cv2.rectangle(to_show, (dets[i][0], dets[i][1]), (dets[i][2], dets[i][3]), (0, 0, 255), 3)
+
+    cv2.imshow('image', to_show)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
 
 if __name__ == '__main__':
     torch.set_grad_enabled(False)
@@ -69,7 +131,7 @@ if __name__ == '__main__':
     net = load_model(net, args.trained_model, args.cpu)
     net.eval()
     print('Finished loading model!')
-    print(net)
+    # print(net)
     cudnn.benchmark = True
     device = torch.device("cpu" if args.cpu else "cuda")
     net = net.to(device)
@@ -78,131 +140,147 @@ if __name__ == '__main__':
     resize = 2
 
     _t = {'forward_pass': Timer(), 'misc': Timer()}
+    data_path="/home/luohwu/Thesis_workspace/dataset/P01_11"
 
-    if args.image:
-        to_show = cv2.imread(args.image, cv2.IMREAD_COLOR)
-        img = np.float32(to_show)
-
-        if resize != 1:
-            img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
-        im_height, im_width, _ = img.shape
-        scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
-        img -= (104, 117, 123)
-        img = img.transpose(2, 0, 1)
-        img = torch.from_numpy(img).unsqueeze(0)
-        img = img.to(device)
-        scale = scale.to(device)
-
-        _t['forward_pass'].tic()
-        out = net(img)  # forward pass
-        _t['forward_pass'].toc()
-        _t['misc'].tic()
-        priorbox = PriorBox(cfg, out[2], (im_height, im_width), phase='test')
-        priors = priorbox.forward()
-        priors = priors.to(device)
-        loc, conf, _ = out
-        prior_data = priors.data
-        boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
-        boxes = boxes * scale / resize
-        boxes = boxes.cpu().numpy()
-        scores = conf.data.cpu().numpy()[:, 1]
-
-        # ignore low scores
-        inds = np.where(scores > args.confidence_threshold)[0]
-        boxes = boxes[inds]
-        scores = scores[inds]
-
-        # keep top-K before NMS
-        order = scores.argsort()[::-1][:args.top_k]
-        boxes = boxes[order]
-        scores = scores[order]
-
-        # do NMS
-        dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
-        #keep = py_cpu_nms(dets, args.nms_threshold)
-        keep = nms(dets, args.nms_threshold, force_cpu=args.cpu)
-        dets = dets[keep, :]
-
-        # keep top-K faster NMS
-        dets = dets[:args.keep_top_k, :]
-        _t['misc'].toc()
-
-        for i in range(dets.shape[0]):
-            cv2.rectangle(to_show, (dets[i][0], dets[i][1]), (dets[i][2], dets[i][3]), [0, 0, 255], 3)
-
-        cv2.imshow('image', to_show)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    else:
-        videofile = args.video
-
-        cap = cv2.VideoCapture(videofile)
-
-        assert cap.isOpened(), 'Cannot capture source'
-
-        while cap.isOpened():
-
-            ret, frame = cap.read()
-            if ret:
-                    to_show = frame
-                    img = np.float32(to_show)
-
-                    if resize != 1:
-                        img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
-                    im_height, im_width, _ = img.shape
-                    scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
-                    img -= (104, 117, 123)
-                    img = img.transpose(2, 0, 1)
-                    img = torch.from_numpy(img).unsqueeze(0)
-                    img = img.to(device)
-                    scale = scale.to(device)
-
-                    _t['forward_pass'].tic()
-                    out = net(img)  # forward pass
-                    _t['forward_pass'].toc()
-                    _t['misc'].tic()
-                    priorbox = PriorBox(cfg, out[2], (im_height, im_width), phase='test')
-                    priors = priorbox.forward()
-                    priors = priors.to(device)
-                    loc, conf, _ = out
-                    prior_data = priors.data
-                    boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
-                    boxes = boxes * scale / resize
-                    boxes = boxes.cpu().numpy()
-                    scores = conf.data.cpu().numpy()[:, 1]
-
-                    # ignore low scores
-                    inds = np.where(scores > args.confidence_threshold)[0]
-                    boxes = boxes[inds]
-                    scores = scores[inds]
-
-                    # keep top-K before NMS
-                    order = scores.argsort()[::-1][:args.top_k]
-                    boxes = boxes[order]
-                    scores = scores[order]
-
-                    # do NMS
-                    dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
-                    # keep = py_cpu_nms(dets, args.nms_threshold)
-                    keep = nms(dets, args.nms_threshold, force_cpu=args.cpu)
-                    dets = dets[keep, :]
-
-                    # keep top-K faster NMS
-                    dets = dets[:args.keep_top_k, :]
-                    _t['misc'].toc()
-
-                    for i in range(dets.shape[0]):
-                        cv2.rectangle(to_show, (dets[i][0], dets[i][1]), (dets[i][2], dets[i][3]), [0, 0, 255], 3)
-
-                    cv2.imshow('image', to_show)
-                    # cv2.waitKey(0)
-                    # cv2.destroyAllWindows()
-
-                    key = cv2.waitKey(1)
-                    if key & 0xFF == ord('q'):
-                        break
-
-
-            else:
-                break
+    for index in range(1,31000,60):
+        image_index=str(index).zfill(10)
+        image_path=os.path.join(data_path,f'frame_{image_index}.jpg')
+        if os.path.exists(image_path):
+            print(image_path)
+            detect_from_image(image_path)
+    # if args.image:
+    #     to_show = cv2.imread(args.image, cv2.IMREAD_COLOR)
+    #     img = np.float32(to_show)
+    #
+    #     if resize != 1:
+    #         img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
+    #     im_height, im_width, _ = img.shape
+    #     scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
+    #     img -= (104, 117, 123)
+    #     img = img.transpose(2, 0, 1)
+    #     img = torch.from_numpy(img).unsqueeze(0)
+    #     img = img.to(device)
+    #     scale = scale.to(device)
+    #
+    #     _t['forward_pass'].tic()
+    #     out = net(img)  # forward pass
+    #     _t['forward_pass'].toc()
+    #     _t['misc'].tic()
+    #     priorbox = PriorBox(cfg, out[2], (im_height, im_width), phase='test')
+    #     priors = priorbox.forward()
+    #     priors = priors.to(device)
+    #     loc, conf, _ = out
+    #     prior_data = priors.data
+    #     boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
+    #     boxes = boxes * scale / resize
+    #     boxes = boxes.cpu().numpy()
+    #     scores = conf.data.cpu().numpy()[:, 1]
+    #
+    #     # ignore low scores
+    #     inds = np.where(scores > args.confidence_threshold)[0]
+    #     boxes = boxes[inds]
+    #     scores = scores[inds]
+    #
+    #     # keep top-K before NMS
+    #     order = scores.argsort()[::-1][:args.top_k]
+    #     boxes = boxes[order]
+    #     scores = scores[order]
+    #
+    #     # do NMS
+    #     dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+    #     #keep = py_cpu_nms(dets, args.nms_threshold)
+    #     keep = nms(dets, args.nms_threshold, force_cpu=args.cpu)
+    #     dets = dets[keep, :]
+    #
+    #     # keep top-K faster NMS
+    #     dets = dets[:args.keep_top_k, :]
+    #     _t['misc'].toc()
+    #     #cv2.destroyAllWindows()
+    #     print(dets[0][2])
+    #     i=0
+    #     cv2.rectangle(to_show, (int(dets[i][0]), int(dets[i][1])), (int(dets[i][2]), int(dets[i][3])), (0, 0, 255), 3)
+    #     #print(dets.shape[0])
+    #
+    #     #for i in range(dets.shape[0]):
+    #         #cv2.rectangle(to_show, (dets[i][0], dets[i][1]), (dets[i][2], dets[i][3]), (0, 0, 255), 3)
+    #
+    #
+	#
+    #     cv2.imshow('image', to_show)
+    #     cv2.waitKey(0)
+    #     cv2.destroyAllWindows()
+    #
+    #
+    #
+    # else:
+    #     videofile = args.video
+    #
+    #     cap = cv2.VideoCapture(videofile)
+    #
+    #     assert cap.isOpened(), 'Cannot capture source'
+    #
+    #     while cap.isOpened():
+    #
+    #         ret, frame = cap.read()
+    #         if ret:
+    #                 to_show = frame
+    #                 img = np.float32(to_show)
+    #
+    #                 if resize != 1:
+    #                     img = cv2.resize(img, None, None, fx=resize, fy=resize, interpolation=cv2.INTER_LINEAR)
+    #                 im_height, im_width, _ = img.shape
+    #                 scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
+    #                 img -= (104, 117, 123)
+    #                 img = img.transpose(2, 0, 1)
+    #                 img = torch.from_numpy(img).unsqueeze(0)
+    #                 img = img.to(device)
+    #                 scale = scale.to(device)
+    #
+    #                 _t['forward_pass'].tic()
+    #                 out = net(img)  # forward pass
+    #                 _t['forward_pass'].toc()
+    #                 _t['misc'].tic()
+    #                 priorbox = PriorBox(cfg, out[2], (im_height, im_width), phase='test')
+    #                 priors = priorbox.forward()
+    #                 priors = priors.to(device)
+    #                 loc, conf, _ = out
+    #                 prior_data = priors.data
+    #                 boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
+    #                 boxes = boxes * scale / resize
+    #                 boxes = boxes.cpu().numpy()
+    #                 scores = conf.data.cpu().numpy()[:, 1]
+    #
+    #                 # ignore low scores
+    #                 inds = np.where(scores > args.confidence_threshold)[0]
+    #                 boxes = boxes[inds]
+    #                 scores = scores[inds]
+    #
+    #                 # keep top-K before NMS
+    #                 order = scores.argsort()[::-1][:args.top_k]
+    #                 boxes = boxes[order]
+    #                 scores = scores[order]
+    #
+    #                 # do NMS
+    #                 dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+    #                 # keep = py_cpu_nms(dets, args.nms_threshold)
+    #                 keep = nms(dets, args.nms_threshold, force_cpu=args.cpu)
+    #                 dets = dets[keep, :]
+    #
+    #                 # keep top-K faster NMS
+    #                 dets = dets[:args.keep_top_k, :]
+    #                 _t['misc'].toc()
+    #
+    #                 for i in range(dets.shape[0]):
+    #                     cv2.rectangle(to_show, (dets[i][0], dets[i][1]), (dets[i][2], dets[i][3]), [0, 0, 255], 3)
+    #
+    #                 cv2.imshow('image', to_show)
+    #                 # cv2.waitKey(0)
+    #                 # cv2.destroyAllWindows()
+    #
+    #                 key = cv2.waitKey(1)
+    #                 if key & 0xFF == ord('q'):
+    #                     break
+    #
+    #
+    #         else:
+    #             break
