@@ -32,10 +32,27 @@ def detect_hands(row):
         y0 = round(image_height * (hand_bbodx_relative.ymin))
         x1 = round(image_width * (hand_bbodx_relative.xmin + hand_bbodx_relative.width))
         y1 = round(image_height * (hand_bbodx_relative.ymin + hand_bbodx_relative.height))
-        hand_bbox.append(x0)
-        hand_bbox.append(y0)
-        hand_bbox.append(x1)
-        hand_bbox.append(y1)
+        # hand_bbox.append(x0)
+        # hand_bbox.append(y0)
+        # hand_bbox.append(x1)
+        # hand_bbox.append(y1)
+        if y0 >= 256:
+            print(f'y {y0}')
+            y0=255
+        if y1 >= 256:
+            # cv2.rectangle(image,(x0,y0),(x1,y1),(255,0,0),3)
+            # cv2.imshow('hand',image)
+            # cv2.waitKey(0)
+            print(f'y1 {y1}')
+            y1=255
+        if x0 >= 456:
+            print(f'x0 {x0}')
+            x0=455
+        if x1 >= 456:
+            print(f'x1: {x1}')
+            x1=455
+
+        hand_bbox.append([x0,y0,x1,y1])
     return hand_bbox
 
 
